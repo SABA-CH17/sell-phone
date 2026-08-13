@@ -71,16 +71,28 @@ if ($result) {
     }
 }
 
-// Load device photos for every lead in this page in one query
+// Build a lead_id -> [photo, ...] map from lead_images, which holds the
+// photos the client actually uploaded of their own device.
 $lead_photos = [];
 if (!empty($leads)) {
-    $ids = array_map(fn($l) => (int) $l['id'], $leads);
-    $id_list = implode(',', $ids);
-    $photo_result = mysqli_query($conn, "SELECT lead_id, image_path FROM lead_images WHERE lead_id IN ($id_list)");
-    if ($photo_result) {
-        while ($p = mysqli_fetch_assoc($photo_result)) {
-            $lead_photos[$p['lead_id']][] = $p['image_path'];
-        }
+    $lead_ids = array_column($leads, 'id');
+    $placeholders = implode(',', array_fill(0, count($lead_ids), '?'));
+    $id_types = str_repeat('i', count($lead_ids));
+
+    $photo_stmt = mysqli_prepare($conn, "SELECT lead_id, image_path FROM lead_images WHERE lead_id IN ($placeholders) ORDER BY id ASC");
+    mysqli_stmt_bind_param($photo_stmt, $id_types, ...$lead_ids);
+    mysqli_stmt_execute($photo_stmt);
+    $photo_result = mysqli_stmt_get_result($photo_stmt);
+    while ($p = mysqli_fetch_assoc($photo_result)) {
+        $lead_photos[$p['lead_id']][] = $p['image_path'];
+    }
+}
+
+// Fall back to the model's catalog photo only if the client didn't upload
+// any photos of their own for that lead.
+foreach ($leads as $l) {
+    if (empty($lead_photos[$l['id']]) && !empty($l['image'])) {
+        $lead_photos[$l['id']] = [$l['image']];
     }
 }
 
@@ -163,13 +175,14 @@ if ($brand_result) {
 
                         <?php if (!empty($photos)): ?>
                             <hr style="border-color:#eef1f5;">
-                            <p style="color:#797979c5; font-size:12.5px; margin-bottom:8px;">Device Photos</p>
-                            <div class="row g-2">
+                            <p style="color:#797979c5; font-size:12.5px; margin-bottom:8px;">
+                                Device Photo<?php echo count($photos) > 1 ? 's' : ''; ?>
+                            </p>
+                            <div style="display:grid; grid-template-columns:repeat(auto-fill, minmax(110px, 1fr)); gap:8px;">
                                 <?php foreach ($photos as $photo): ?>
-                                    <div class="col-6">
-                                        <img src="../<?php echo htmlspecialchars($photo); ?>"
-                                            style="width:100%; height:160px; object-fit:cover; border-radius:8px;">
-                                    </div>
+                                    <img src="../<?php echo htmlspecialchars($photo); ?>"
+                                        style="width:100%; height:110px; object-fit:cover; border-radius:8px; background:#f7f9fc; cursor:pointer;"
+                                        onclick="window.open(this.src, '_blank')">
                                 <?php endforeach; ?>
                             </div>
                         <?php endif; ?>
@@ -224,7 +237,7 @@ if ($brand_result) {
                                 <select class="status-select"
                                     data-status="<?php echo htmlspecialchars($lead['status'] ?? 'pending'); ?>"
                                     data-id="<?php echo (int) $lead['id']; ?>"
-                                    onchange="this.setAttribute('data-status', this.value)">
+                                    onchange="updateLeadStatus(this)">
                                     <option value="pending" <?php echo ($lead['status'] ?? '') === 'pending' ? 'selected' : ''; ?>>Pending</option>
                                     <option value="contacted" <?php echo ($lead['status'] ?? '') === 'contacted' ? 'selected' : ''; ?>>Contacted</option>
                                     <option value="completed" <?php echo ($lead['status'] ?? '') === 'completed' ? 'selected' : ''; ?>>Completed</option>
@@ -260,6 +273,43 @@ if ($brand_result) {
     <?php endif; ?>
 
 </div>
+
+<script>
+function updateLeadStatus(selectEl) {
+    var id = selectEl.getAttribute('data-id');
+    var previousStatus = selectEl.getAttribute('data-status');
+    var newStatus = selectEl.value;
+
+    selectEl.disabled = true;
+
+    var params = new URLSearchParams();
+    params.append('id', id);
+    params.append('status', newStatus);
+
+    fetch('update-lead-status.php', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: params.toString()
+    })
+    .then(function (res) { return res.json(); })
+    .then(function (data) {
+        selectEl.disabled = false;
+        if (data.success) {
+            selectEl.setAttribute('data-status', newStatus);
+        } else {
+            // Revert the dropdown if the save failed
+            selectEl.value = previousStatus;
+            alert(data.message || 'Could not update status.');
+        }
+    })
+    .catch(function () {
+        selectEl.disabled = false;
+        selectEl.value = previousStatus;
+        alert('Network error. Could not update status.');
+    });
+}
+</script>
+
 </body>
 
 </html>

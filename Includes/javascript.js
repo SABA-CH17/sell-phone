@@ -74,6 +74,87 @@ function loadModelPricing(modelId, sectionSelector) {
         });
 }
 
+// Photos of the client's own device picked in the final form. Kept in a
+// persistent array (instead of relying on input.files) because a native
+// file input's .files is replaced, not appended to, every time the picker
+// is reopened.
+var selectedDevicePhotos = [];
+var devicePhotoIdCounter = 0;
+var MAX_DEVICE_PHOTOS = 4;
+
+function renderDevicePhotoPreviews() {
+    var $preview = $('#devicePhotosPreview');
+    $preview.empty();
+    selectedDevicePhotos.forEach(function (item) {
+        var $thumb = $('<div></div>').css({
+            position: 'relative',
+            width: '46px',
+            height: '46px'
+        });
+        $('<img>').attr('src', item.url).css({
+            width: '100%',
+            height: '100%',
+            objectFit: 'cover',
+            borderRadius: '6px',
+            border: '1px solid #dcdcdc'
+        }).appendTo($thumb);
+        $('<button type="button">&times;</button>').addClass('remove-device-photo')
+            .attr('data-id', item.id)
+            .attr('title', 'Remove photo')
+            .css({
+                position: 'absolute',
+                top: '-6px',
+                right: '-6px',
+                width: '16px',
+                height: '16px',
+                lineHeight: '14px',
+                padding: '0',
+                borderRadius: '50%',
+                border: 'none',
+                background: '#dc3545',
+                color: '#fff',
+                fontSize: '11px',
+                cursor: 'pointer'
+            }).appendTo($thumb);
+        $preview.append($thumb);
+    });
+}
+
+function resetDevicePhotos() {
+    selectedDevicePhotos.forEach(function (item) { URL.revokeObjectURL(item.url); });
+    selectedDevicePhotos = [];
+    renderDevicePhotoPreviews();
+}
+
+$(document).on('change', '#devicePhotosInput', function () {
+    var newFiles = Array.prototype.slice.call(this.files);
+    var remainingSlots = MAX_DEVICE_PHOTOS - selectedDevicePhotos.length;
+
+    newFiles.slice(0, remainingSlots).forEach(function (file) {
+        devicePhotoIdCounter++;
+        selectedDevicePhotos.push({
+            id: devicePhotoIdCounter,
+            file: file,
+            url: URL.createObjectURL(file)
+        });
+    });
+
+    renderDevicePhotoPreviews();
+    // Clear the native input so it never "holds" a stale batch, and so
+    // picking the same file again later still fires a change event.
+    this.value = '';
+});
+
+$(document).on('click', '.remove-device-photo', function () {
+    var id = parseInt($(this).attr('data-id'), 10);
+    var item = selectedDevicePhotos.find(function (p) { return p.id === id; });
+    if (item) {
+        URL.revokeObjectURL(item.url);
+    }
+    selectedDevicePhotos = selectedDevicePhotos.filter(function (p) { return p.id !== id; });
+    renderDevicePhotoPreviews();
+});
+
 $(document).ready(function () {
 
     $(document).on('click', '#pills-home .card', function () {
@@ -280,14 +361,14 @@ function submitFormAndProceed() {
         leadFormData.append('address', address);
 
         var photoInput = form.querySelector('input[name="device_photos[]"]');
-        if (photoInput && photoInput.files.length) {
-            for (var i = 0; i < photoInput.files.length; i++) {
-                leadFormData.append('device_photos[]', photoInput.files[i]);
-            }
+        if (photoInput) {
+            selectedDevicePhotos.forEach(function (item) {
+                leadFormData.append('device_photos[]', item.file);
+            });
         }
 
         console.log(leadFormData);
-        return fetch('save-lead.php', {
+        return fetch('save-leads.php', {
             method: 'POST',
             body: leadFormData
         }).then(function (res) { return res.json(); });
@@ -308,6 +389,7 @@ function submitFormAndProceed() {
                 var modal = bootstrap.Modal.getInstance(modalEl);
                 modal.hide();
                 form.reset();
+                resetDevicePhotos();
                 alertBox.style.display = 'none';
             }, 2200);
         }

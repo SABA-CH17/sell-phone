@@ -24,13 +24,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 
     $model_img = '';
-    $img_stmt = mysqli_prepare($conn, "SELECT image FROM models WHERE model_name = ? AND brand = ? LIMIT 1");
+    $img_stmt = mysqli_prepare($conn, "SELECT image FROM models WHERE id = ? ");
     if ($img_stmt === false) {
         $response["message"] = "DB error preparing image lookup: " . mysqli_error($conn);
         echo json_encode($response);
         exit;
     }
-    mysqli_stmt_bind_param($img_stmt, "ss", $model_name, $brand);
+    mysqli_stmt_bind_param($img_stmt, "i", $model_id);
     mysqli_stmt_execute($img_stmt);
     $img_result = mysqli_stmt_get_result($img_stmt);
     if ($img_row = mysqli_fetch_assoc($img_result)) {
@@ -54,10 +54,41 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         mysqli_stmt_bind_param($update, "si", $order_number, $id);
         mysqli_stmt_execute($update);
 
+        // Save the client's own uploaded device photos (if any) into lead_images,
+        // linked to this lead. These are separate from the model's catalog photo.
+        $saved_photos = [];
+        $upload_dir = "imgs/";
+        $allowed_ext = ["jpg", "jpeg", "png", "webp"];
+
+        if (!empty($_FILES['device_photos']) && is_array($_FILES['device_photos']['name'])) {
+            $photo_stmt = mysqli_prepare($conn, "INSERT INTO lead_images (lead_id, image_path) VALUES (?, ?)");
+            $file_count = count($_FILES['device_photos']['name']);
+
+            for ($i = 0; $i < $file_count && $i < 4; $i++) {
+                if ($_FILES['device_photos']['error'][$i] !== UPLOAD_ERR_OK) {
+                    continue;
+                }
+                $ext = strtolower(pathinfo($_FILES['device_photos']['name'][$i], PATHINFO_EXTENSION));
+                if (!in_array($ext, $allowed_ext)) {
+                    continue;
+                }
+                $filename = uniqid('lead_') . '.' . $ext;
+                $target_path = $upload_dir . $filename;
+
+                if (move_uploaded_file($_FILES['device_photos']['tmp_name'][$i], $target_path)) {
+                    $image_path = "imgs/" . $filename;
+                    mysqli_stmt_bind_param($photo_stmt, "is", $id, $image_path);
+                    mysqli_stmt_execute($photo_stmt);
+                    $saved_photos[] = $image_path;
+                }
+            }
+        }
+
         $response["success"] = true;
         $response["message"] = "Thanks! We'll contact you shortly with the next steps.";
         $response["price"] = $price;
         $response["order_number"] = $order_number;
+        $response["photos"] = $saved_photos;
     } else {
         $response["message"] = "Could not save your submission: " . mysqli_stmt_error($stmt);
     }

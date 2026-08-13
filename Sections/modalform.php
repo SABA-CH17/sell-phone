@@ -26,7 +26,8 @@
                     </div>
                     <div class="mb-3">
                     <label class="form-label" style="font-size:12.5px; color:#797979c5;">Photos of your phone (optional, up to 4)</label>
-                    <input type="file" name="device_photos[]" class="form-control" accept="image/*" multiple>
+                    <input type="file" id="devicePhotosInput" name="device_photos[]" class="form-control" accept="image/*" multiple>
+                    <div id="devicePhotosPreview" style="display:flex; flex-wrap:wrap; gap:6px; margin-top:8px;"></div>
                     </div>
                 </form>
             </div>
