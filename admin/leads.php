@@ -1,0 +1,265 @@
+<?php
+include("include/db-connect.php");
+include("include/auth-check.php");
+require_once('include/a-header.php');
+
+$brand_filter = trim($_GET['brand'] ?? '');
+$status_filter = trim($_GET['status'] ?? '');
+$search = trim($_GET['search'] ?? '');
+
+$where = [];
+$params = [];
+$types = '';
+
+if ($brand_filter !== '') {
+    $where[] = "brand = ?";
+    $params[] = $brand_filter;
+    $types .= 's';
+}
+if ($status_filter !== '') {
+    $where[] = "status = ?";
+    $params[] = $status_filter;
+    $types .= 's';
+}
+if ($search !== '') {
+    $where[] = "(name LIKE ? OR phone LIKE ?)";
+    $like = "%$search%";
+    $params[] = $like;
+    $params[] = $like;
+    $types .= 'ss';
+}
+
+$sql = "SELECT * FROM leads";
+if (!empty($where)) {
+    $sql .= " WHERE " . implode(" AND ", $where);
+}
+
+// Count total matching leads first (for the pagination links)
+$count_sql = "SELECT COUNT(*) as total FROM leads";
+if (!empty($where)) {
+    $count_sql .= " WHERE " . implode(" AND ", $where);
+}
+$total_leads = 0;
+if (!empty($params)) {
+    $count_stmt = mysqli_prepare($conn, $count_sql);
+    mysqli_stmt_bind_param($count_stmt, $types, ...$params);
+    mysqli_stmt_execute($count_stmt);
+    $count_row = mysqli_fetch_assoc(mysqli_stmt_get_result($count_stmt));
+} else {
+    $count_row = mysqli_fetch_assoc(mysqli_query($conn, $count_sql));
+}
+$total_leads = (int) ($count_row['total'] ?? 0);
+
+$per_page = 20;
+$total_pages = max(1, (int) ceil($total_leads / $per_page));
+$current_page = max(1, min($total_pages, (int) ($_GET['page'] ?? 1)));
+$offset = ($current_page - 1) * $per_page;
+
+$sql .= " ORDER BY created_at DESC LIMIT ? OFFSET ?";
+$params[] = $per_page;
+$params[] = $offset;
+$types .= 'ii';
+
+$leads = [];
+$stmt = mysqli_prepare($conn, $sql);
+mysqli_stmt_bind_param($stmt, $types, ...$params);
+mysqli_stmt_execute($stmt);
+$result = mysqli_stmt_get_result($stmt);
+if ($result) {
+    while ($row = mysqli_fetch_assoc($result)) {
+        $leads[] = $row;
+    }
+}
+
+// Load device photos for every lead in this page in one query
+$lead_photos = [];
+if (!empty($leads)) {
+    $ids = array_map(fn($l) => (int) $l['id'], $leads);
+    $id_list = implode(',', $ids);
+    $photo_result = mysqli_query($conn, "SELECT lead_id, image_path FROM lead_images WHERE lead_id IN ($id_list)");
+    if ($photo_result) {
+        while ($p = mysqli_fetch_assoc($photo_result)) {
+            $lead_photos[$p['lead_id']][] = $p['image_path'];
+        }
+    }
+}
+
+$brands = [];
+$brand_result = mysqli_query($conn, "SELECT DISTINCT brand FROM leads WHERE brand IS NOT NULL AND brand <> '' ORDER BY brand");
+if ($brand_result) {
+    while ($b = mysqli_fetch_assoc($brand_result)) {
+        $brands[] = $b['brand'];
+    }
+}
+?>
+<?php require_once('section/sidebar.php'); ?>
+<div class="main-content">
+    <div class="content-header">
+        <div>
+            <h1 class="main-h1">Leads</h1>
+            <p class="current-date">Manage all sell-phone submissions</p>
+        </div>
+        <div class="admin-avatar">AD</div>
+    </div>
+
+    <form method="GET" action="leads.php" class="d-flex flex-wrap gap-2 align-items-center mb-4">
+        <div class="input-group flex-nowrap" style="max-width:260px; height:30px; border-radius:2px;">
+            <input type="text" name="search" class="form-control" placeholder="Search by name or phone..."
+                aria-label="Search" value="<?php echo htmlspecialchars($search); ?>">
+        </div>
+
+        <select name="brand" class="form-select form-select-sm" style="max-width:180px; margin-bottom:5px;" onchange="this.form.submit()">
+            <option value="">All brands</option>
+            <?php foreach ($brands as $b): ?>
+                <option value="<?php echo htmlspecialchars($b); ?>" <?php echo ($brand_filter === $b) ? 'selected' : ''; ?>>
+                    <?php echo htmlspecialchars($b); ?>
+                </option>
+            <?php endforeach; ?>
+        </select>
+
+        <select name="status" class="form-select form-select-sm" style="max-width:180px;" onchange="this.form.submit()">
+            <option value="">All status</option>
+            <option value="pending" <?php echo $status_filter === 'pending' ? 'selected' : ''; ?>>Pending</option>
+            <option value="contacted" <?php echo $status_filter === 'contacted' ? 'selected' : ''; ?>>Contacted</option>
+            <option value="completed" <?php echo $status_filter === 'completed' ? 'selected' : ''; ?>>Completed</option>
+        </select>
+
+        <button type="submit" class="btn btn-sm" style="background:#0B1E3F; color:#fff;">Filter</button>
+        <?php if ($brand_filter !== '' || $status_filter !== '' || $search !== ''): ?>
+            <a href="leads.php" class="btn btn-sm btn-secondary">Clear</a>
+        <?php endif; ?>
+    </form>
+
+    <!-- Details modals (one per lead: order #, email, address, photos) -->
+    <?php foreach ($leads as $lead): ?>
+        <?php $photos = $lead_photos[$lead['id']] ?? []; ?>
+        <div class="modal fade" id="detailsModal<?php echo (int) $lead['id']; ?>" tabindex="-1" aria-hidden="true">
+            <div class="modal-dialog modal-dialog-centered">
+                <div class="modal-content" style="border-radius:14px;">
+                    <div class="modal-header" style="border-bottom:1px solid #eef1f5;">
+                        <div>
+                            <h1 class="modal-title fs-5" style="color:#0B1E3F; margin-bottom:2px;">
+                                <?php echo htmlspecialchars($lead['name'] ?? ''); ?>
+                            </h1>
+                            <span style="font-size:12px; color:#797979c5;">Order #<?php echo htmlspecialchars($lead['order_number'] ?? '—'); ?></span>
+                        </div>
+                        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                    </div>
+                    <div class="modal-body">
+                        <table style="width:100%; font-size:13.5px;">
+                            <tr>
+                                <td style="color:#797979c5; padding:6px 0; width:110px;">Email</td>
+                                <td><?php echo htmlspecialchars($lead['email'] ?? '—'); ?></td>
+                            </tr>
+                            <tr>
+                                <td style="color:#797979c5; padding:6px 0;">Phone</td>
+                                <td><?php echo htmlspecialchars($lead['phone'] ?? '—'); ?></td>
+                            </tr>
+                            <tr>
+                                <td style="color:#797979c5; padding:6px 0; vertical-align:top;">Address</td>
+                                <td><?php echo htmlspecialchars($lead['address'] ?? '—'); ?></td>
+                            </tr>
+                        </table>
+
+                        <?php if (!empty($photos)): ?>
+                            <hr style="border-color:#eef1f5;">
+                            <p style="color:#797979c5; font-size:12.5px; margin-bottom:8px;">Device Photos</p>
+                            <div class="row g-2">
+                                <?php foreach ($photos as $photo): ?>
+                                    <div class="col-6">
+                                        <img src="../<?php echo htmlspecialchars($photo); ?>"
+                                            style="width:100%; height:160px; object-fit:cover; border-radius:8px;">
+                                    </div>
+                                <?php endforeach; ?>
+                            </div>
+                        <?php endif; ?>
+                    </div>
+                </div>
+            </div>
+        </div>
+    <?php endforeach; ?>
+
+    <div class="leads-tables-wrap">
+        <table class="leads-tables">
+            <thead>
+                <tr>
+                    <th>Order #</th>
+                    <th>Name</th>
+                    <th>Model</th>
+                    <th>Storage</th>
+                    <th>Price</th>
+                    <th>Phone</th>
+                    <th>Date</th>
+                    <th>Status</th>
+                </tr>
+            </thead>
+            <tbody>
+                <?php if (empty($leads)): ?>
+                    <tr>
+                        <td colspan="8" style="text-align:center; padding:24px; color:#797979c5;">No leads found.</td>
+                    </tr>
+                <?php else: ?>
+                    <?php foreach ($leads as $lead): ?>
+                        <?php $photos = $lead_photos[$lead['id']] ?? []; ?>
+                        <tr>
+                            <td><?php echo htmlspecialchars($lead['order_number'] ?? '—'); ?></td>
+                            <td class="col-name">
+                                <?php echo htmlspecialchars($lead['name'] ?? ''); ?>
+                                <div>
+                                    <a href="javascript:void(0)" class="view-details-link"
+                                        data-bs-toggle="modal" data-bs-target="#detailsModal<?php echo (int) $lead['id']; ?>">
+                                        View Details
+                                        <?php if (!empty($photos)): ?>
+                                            <span class="photo-badge"><i class="fa-solid fa-images"></i> <?php echo count($photos); ?></span>
+                                        <?php endif; ?>
+                                    </a>
+                                </div>
+                            </td>
+                            <td><?php echo htmlspecialchars($lead['model'] ?? ''); ?></td>
+                            <td><?php echo htmlspecialchars($lead['storage'] ?? ''); ?></td>
+                            <td class="col-price">AED <?php echo number_format((float) ($lead['price'] ?? 0), 0); ?></td>
+                            <td class="col-phone"><?php echo htmlspecialchars($lead['phone'] ?? ''); ?></td>
+                            <td><?php echo !empty($lead['created_at']) ? htmlspecialchars(date("M j", strtotime($lead['created_at']))) : ''; ?></td>
+                            <td>
+                                <select class="status-select"
+                                    data-status="<?php echo htmlspecialchars($lead['status'] ?? 'pending'); ?>"
+                                    data-id="<?php echo (int) $lead['id']; ?>"
+                                    onchange="this.setAttribute('data-status', this.value)">
+                                    <option value="pending" <?php echo ($lead['status'] ?? '') === 'pending' ? 'selected' : ''; ?>>Pending</option>
+                                    <option value="contacted" <?php echo ($lead['status'] ?? '') === 'contacted' ? 'selected' : ''; ?>>Contacted</option>
+                                    <option value="completed" <?php echo ($lead['status'] ?? '') === 'completed' ? 'selected' : ''; ?>>Completed</option>
+                                </select>
+                            </td>
+                        </tr>
+                    <?php endforeach; ?>
+                <?php endif; ?>
+            </tbody>
+        </table>
+    </div>
+
+    <?php if ($total_pages > 1): ?>
+        <?php
+        $query_params = array_filter([
+            'search' => $search,
+            'brand' => $brand_filter,
+            'status' => $status_filter,
+        ]);
+        ?>
+        <ul class="pagination pagination-sm justify-content-center mt-4">
+            <?php for ($p = 1; $p <= $total_pages; $p++): ?>
+                <?php $query_params['page'] = $p; ?>
+                <li class="page-item <?php echo $p === $current_page ? 'active' : ''; ?>">
+                    <a class="page-link"
+                        style="<?php echo $p === $current_page ? 'background-color:#0B1E3F; border-color:#0B1E3F; color:white;' : 'color:#0B1E3F;'; ?>"
+                        href="leads.php?<?php echo http_build_query($query_params); ?>">
+                        <?php echo $p; ?>
+                    </a>
+                </li>
+            <?php endfor; ?>
+        </ul>
+    <?php endif; ?>
+
+</div>
+</body>
+
+</html>
